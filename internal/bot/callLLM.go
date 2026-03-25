@@ -1,13 +1,22 @@
 package bot
 
-import "google.golang.org/genai"
+import (
+	"context"
+	"time"
 
-func Call(history []*genai.Content) (*genai.GenerateContentResponse, error) {
+	"google.golang.org/genai"
+)
+
+func Call(history []*genai.Content, reqConfig *genai.GenerateContentConfig) (*genai.GenerateContentResponse, time.Duration, error) {
+	now := time.Now()
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	result, err := gclient.Models.GenerateContent(
-		ctx,
+		timeoutCtx,
 		botConfig.Model.Model,
 		history,
-		botConfig.Model.Config,
+		reqConfig,
 	)
-	return result, err
+	costTime := time.Since(now)
+	return result, costTime, err
 }

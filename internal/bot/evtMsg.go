@@ -2,7 +2,11 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -13,6 +17,18 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/format"
 )
+
+func saveQuota() {
+	path := filepath.Join(workdir, "search_quota.json")
+	// 使用 json.MarshalIndent 可以让生成的 JSON 文件有缩进
+	data, _ := json.MarshalIndent(quota, "", "\t")
+	err := os.WriteFile(path, data, 0644)
+	if err != nil {
+		str := "Saving data to search_quota.json fail." + err.Error()
+		logger.Log("error", str, logger.Options{})
+		sendToLogRoom(str)
+	}
+}
 
 func evtMsg(ctx context.Context, evt *event.Event) {
 	if evt.Timestamp < bootTimeUnixmilli {
@@ -28,46 +44,53 @@ func evtMsg(ctx context.Context, evt *event.Event) {
 		return
 	}
 
-	if msg.MsgType == event.MsgText {
-		membersResp, err := client.JoinedMembers(ctx, evt.RoomID)
-		if err != nil {
-			_ = logger.Log("error", " Failed to get room member list: "+err.Error(), logger.Options{})
-			return
+	if msg.MsgType != event.MsgText {
+		return
+	}
+
+	membersResp, err := client.JoinedMembers(ctx, evt.RoomID)
+	if err != nil {
+		_ = logger.Log("error", " Failed to get room member list: "+err.Error(), logger.Options{})
+		return
+	}
+	peopleNum := len(membersResp.Joined)
+	isMentioned := false
+	if peopleNum > 2 {
+		if strings.HasPrefix(msg.Body, "!c ") {
+			isMentioned = true
 		}
-		peopleNum := len(membersResp.Joined)
-		isMentioned := false
-		if peopleNum > 2 {
-			if strings.HasPrefix(msg.Body, "!c ") {
-				isMentioned = true
-			}
-			if strings.HasPrefix(msg.Body, string(client.UserID)) {
-				isMentioned = true
-			}
-			if msg.Mentions != nil && len(msg.Mentions.UserIDs) > 0 {
-				for _, uid := range msg.Mentions.UserIDs {
-					if uid == client.UserID {
-						isMentioned = true
-						break
-					}
+		if strings.HasPrefix(msg.Body, string(client.UserID)) {
+			isMentioned = true
+		}
+		if msg.Mentions != nil && len(msg.Mentions.UserIDs) > 0 {
+			for _, uid := range msg.Mentions.UserIDs {
+				if uid == client.UserID {
+					isMentioned = true
+					break
 				}
 			}
-			if !isMentioned {
-				return
-			}
 		}
-
-		var req string = msg.Body
-		mentionPattern := `\[.*?\]\(https://matrix\.to/#/` + regexp.QuoteMeta(string(client.UserID)) + `\)`
-		mentionRegex := regexp.MustCompile(mentionPattern)
-		req = mentionRegex.ReplaceAllString(req, "")
-		req = strings.ReplaceAll(req, string(client.UserID), "")
-		req = strings.ReplaceAll(req, "@[希]", "")
-		req = strings.ReplaceAll(req, "@希", "")
-		req = strings.ReplaceAll(req, "!c ", "")
-		req = strings.TrimSpace(req)
-		if len(req) > 0 && req[0] == ':' {
+		if !isMentioned {
 			return
 		}
+	}
+
+	var req string = msg.Body
+	mentionPattern := `\[.*?\]\(https://matrix\.to/#/` + regexp.QuoteMeta(string(client.UserID)) + `\)`
+	mentionRegex := regexp.MustCompile(mentionPattern)
+	req = mentionRegex.ReplaceAllString(req, "")
+	req = strings.ReplaceAll(req, string(client.UserID), "")
+	req = strings.ReplaceAll(req, "@[希]", "")
+	req = strings.ReplaceAll(req, "@希", "")
+	req = strings.ReplaceAll(req, "!c ", "")
+	req = strings.TrimSpace(req)
+	if len(req) == 0 {
+		req = "(叫了你一下但什么也没说)"
+	}
+
+	go func(evt *event.Event, req string) {
+		// 由于是独立协程，不允许再使用外部context
+		ctx := context.Background()
 
 		var history []*genai.Content
 		if val, ok := chatMemory.Load(evt.RoomID.String()); ok {
@@ -85,17 +108,43 @@ func evtMsg(ctx context.Context, evt *event.Event) {
 			}
 		}
 
-		result, err := Call(history)
-		if err != nil {
-			_, _ = client.SendText(ctx, evt.RoomID, "Sorry, I need rest.")
-			_ = logger.Log("error", fmt.Sprintf("Gemini meet a error: %s", err.Error()), logger.Options{})
+		reqConfig := botConfig.Model.Config
+		nowMonth := time.Now().Format("2006-01")
+		searchMutex.Lock()
+		if quota.Month != nowMonth {
+			quota.Month = nowMonth
+			quota.Count = botConfig.Model.MaxMonthlySearch
+			saveQuota()
+		}
+		if quota.Count <= 0 {
+			tempConfig := *reqConfig //解引用拿到浅拷贝
+			tempConfig.Tools = nil
+			reqConfig = &tempConfig
+		}
+		searchMutex.Unlock()
 
+		result, costTime, err := Call(history, reqConfig)
+		if err != nil {
 			str := "用户：" + evt.Sender.String() + "\n"
 			str += "房间：" + evt.RoomID.String() + "\n"
 			str += "请求：" + req + "\n"
 			str += "时间：" + time.UnixMilli(evt.Timestamp).Format("2006-01-02 15:04:05") + "\n"
-			str += "错误：" + err.Error()
-			sendToLogRoom(str)
+
+			errMsg := err.Error()
+			isLocalTimeout := errors.Is(err, context.DeadlineExceeded)
+			isRemoteTimeout := strings.Contains(errMsg, "DEADLINE_EXCEEDED") || strings.Contains(errMsg, "504")
+			if isLocalTimeout || isRemoteTimeout {
+				str += fmt.Sprintf("大模型调用超时：%v", costTime)
+				_, _ = client.SendText(ctx, evt.RoomID, "Network congestion.Please try again later.")
+				_ = logger.Log("error", fmt.Sprintf("Call LLM time out, spent: %v", costTime), logger.Options{})
+				sendToLogRoom(str)
+			} else {
+				_, _ = client.SendText(ctx, evt.RoomID, "Sorry, I need rest.")
+				_ = logger.Log("error", fmt.Sprintf("Gemini meet a error: %s", err.Error()), logger.Options{})
+
+				str += "错误：" + err.Error()
+				sendToLogRoom(str)
+			}
 
 			if len(history) > 0 {
 				history = history[:len(history)-1]
@@ -105,10 +154,11 @@ func evtMsg(ctx context.Context, evt *event.Event) {
 		}
 
 		tokenConsume := fmt.Sprintf(
-			" | 输入%d 输出%d 总计消耗%d",
+			" | 输入%d 输出%d 总计消耗%d | %v",
 			result.UsageMetadata.PromptTokenCount,
 			result.UsageMetadata.CandidatesTokenCount,
 			result.UsageMetadata.TotalTokenCount,
+			costTime,
 		)
 		_ = logger.Log("bot", req+tokenConsume, logger.Options{UserID: evt.Sender.String(), RoomID: evt.RoomID.String()})
 
@@ -122,6 +172,18 @@ func evtMsg(ctx context.Context, evt *event.Event) {
 			str += "Token 账单单次达到警报值！\n"
 			str += tokenConsume
 			sendToLogRoom(str)
+		}
+
+		if len(result.Candidates) > 0 && result.Candidates[0].GroundingMetadata != nil {
+			// 只要 GroundingMetadata 不为空，且包含了搜索入口或数据块，就说明大模型悄悄上网了
+			meta := result.Candidates[0].GroundingMetadata
+			if meta.SearchEntryPoint != nil || len(meta.GroundingChunks) > 0 {
+				// fmt.Println("大模型搜索了:", meta.WebSearchQueries)
+				searchMutex.Lock()
+				quota.Count--
+				saveQuota()
+				searchMutex.Unlock()
+			}
 		}
 
 		raw := result.Text()
@@ -176,5 +238,5 @@ func evtMsg(ctx context.Context, evt *event.Event) {
 			str += "时间：" + time.UnixMilli(evt.Timestamp).Format("2006-01-02 15:04:05")
 			sendToLogRoom(str)
 		}
-	}
+	}(evt, req)
 }

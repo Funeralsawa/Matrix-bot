@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -20,6 +21,11 @@ import (
 	"nozomi/internal/logger"
 )
 
+type SearchQuota struct {
+	Month string `json:"month"`
+	Count int    `json:"count"`
+}
+
 var (
 	ctx               context.Context = context.Background()
 	client            *mautrix.Client
@@ -30,6 +36,8 @@ var (
 	chatMemory        sync.Map = sync.Map{}
 	bootTimeUnixmilli int64
 	workdir           string
+	searchMutex       sync.Mutex
+	quota             SearchQuota
 )
 
 func IsExist(path string) (bool, error) {
@@ -93,6 +101,23 @@ func createDirOrFile() {
 			os.Exit(1)
 		}
 		log.Println("Create database path sucessfully.")
+	}
+	quotaPath := filepath.Join(workdir, "search_quota.json")
+	ok, _ = IsExist(quotaPath)
+	if !ok {
+		log.Println("search_quota.json does not exist, creating...")
+		defaultQuota := SearchQuota{
+			Month: "1970-01",
+			Count: 0,
+		}
+		quotaBytes, _ := json.MarshalIndent(defaultQuota, "", "\t")
+		err := os.WriteFile(quotaPath, quotaBytes, 0644)
+		if err != nil {
+			log.Println("Auto creating search_quota.json failed: " + err.Error())
+			os.Exit(1)
+		}
+		log.Println("Create search_quota.json sucessfully.")
+		log.Println("All config file has created.Pls check no file is empty.")
 		os.Exit(0)
 	}
 }
@@ -211,6 +236,22 @@ func Start() {
 	client.Crypto = cryptoHelper
 
 	bootTimeUnixmilli = time.Now().UnixMilli()
+
+	// Init search_quota.json
+	path := filepath.Join(workdir, "search_quota.json")
+	quotaData, err := os.ReadFile(path)
+	if err != nil {
+		str := "Failed to read search_quota.json." + err.Error()
+		logger.Log("error", str, logger.Options{})
+		os.Exit(1)
+	}
+	err = json.Unmarshal(quotaData, &quota)
+	if err != nil {
+		str := "Failed to unmarshal search_quota.json data." + err.Error()
+		logger.Log("error", str, logger.Options{})
+		os.Exit(1)
+	}
+
 	syncer = client.Syncer.(*mautrix.DefaultSyncer)
 	defer cryptoHelper.Close()
 
