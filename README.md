@@ -1,0 +1,1 @@
+A bot which was made by Mautrix-go.
