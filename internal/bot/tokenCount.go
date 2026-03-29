@@ -61,6 +61,22 @@ func SaveTimeLog() {
 	}
 }
 
+func SaveTokenUsage() {
+	path := filepath.Join(workdir, "data", "token_usage.json")
+	data, err := json.MarshalIndent(GlobalTokenUsage, "", "\t")
+	if err != nil {
+		_ = logger.Log("error", "Failed to marshal token usage: "+err.Error(), logger.Options{})
+		return
+	}
+
+	err = os.WriteFile(path, data, 0644)
+	if err != nil {
+		str := "Saving data to token_usage.json fail: " + err.Error()
+		_ = logger.Log("error", str, logger.Options{})
+		sendToLogRoom(str)
+	}
+}
+
 func CheckAndResetBilling() {
 	now := time.Now()
 
@@ -125,22 +141,6 @@ func LoadTokenUsage() {
 	}
 }
 
-func SaveTokenUsage() {
-	path := filepath.Join(workdir, "data", "token_usage.json")
-	data, err := json.MarshalIndent(GlobalTokenUsage, "", "\t")
-	if err != nil {
-		_ = logger.Log("error", "Failed to marshal token usage: "+err.Error(), logger.Options{})
-		return
-	}
-
-	err = os.WriteFile(path, data, 0644)
-	if err != nil {
-		str := "Saving data to token_usage.json fail: " + err.Error()
-		_ = logger.Log("error", str, logger.Options{})
-		sendToLogRoom(str)
-	}
-}
-
 func startBillingCheckTask() {
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
@@ -150,6 +150,7 @@ func startBillingCheckTask() {
 
 		tokenMutex.Lock()
 		CheckAndResetBilling()
+		SaveTokenUsage()
 		tokenMutex.Unlock()
 	}
 }

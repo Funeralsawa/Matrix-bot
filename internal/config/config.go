@@ -31,6 +31,9 @@ type ModelConfig struct {
 	MaxMonthlySearch int                          `yaml:"maxMonthlySearch"`
 	TimeOutWhen      time.Duration                `yaml:"timeOutWhen"`
 	DatabasePassword string                       `yaml:"databasePassword"`
+	IncludeThoughts  bool                         `yaml:"includeThoughts"`
+	ThinkingBudget   int32                        `yaml:"thinkingBudget"`
+	ThinkingLevel    string                       `yaml:"thinkingLevel"`
 	Soul             string                       `yaml:"-"`
 	Config           *genai.GenerateContentConfig `yaml:"-"`
 }

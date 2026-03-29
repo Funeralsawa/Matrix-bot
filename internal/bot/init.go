@@ -30,6 +30,12 @@ type TimeLog struct {
 	Time time.Time `json:"Time"`
 }
 
+type ImageCacheItem struct {
+	sync.Mutex
+	Parts      []*genai.Part
+	ExpireTime time.Time
+}
+
 var (
 	ctx               context.Context = context.Background()
 	timeLog           TimeLog
@@ -38,7 +44,8 @@ var (
 	botConfig         config.BotConfig
 	cryptoHelper      *cryptohelper.CryptoHelper
 	syncer            *mautrix.DefaultSyncer
-	chatMemory        sync.Map = sync.Map{}
+	chatMemory        sync.Map = sync.Map{} // 格式 map[string]*genai.Content
+	privateImageCache sync.Map = sync.Map{} // 格式: map[string]*ImageCacheItem
 	roomLocks         sync.Map = sync.Map{}
 	bootTimeUnixmilli int64
 	workdir           string
@@ -214,9 +221,22 @@ func Start() {
 		os.Exit(1)
 	}
 
+	//Init model config
 	botConfig.Model.Config = &genai.GenerateContentConfig{
 		MaxOutputTokens:   botConfig.Model.MaxOutputToken,
 		SystemInstruction: genai.Text(botConfig.Model.Soul)[0],
+	}
+	if botConfig.Model.IncludeThoughts {
+		botConfig.Model.Config.ThinkingConfig = &genai.ThinkingConfig{
+			IncludeThoughts: botConfig.Model.IncludeThoughts,
+		}
+		if botConfig.Model.ThinkingBudget > 0 {
+			botConfig.Model.Config.ThinkingConfig.ThinkingBudget = &botConfig.Model.ThinkingBudget
+		} else if botConfig.Model.ThinkingLevel != "" {
+			botConfig.Model.Config.ThinkingConfig.ThinkingLevel = genai.ThinkingLevel(botConfig.Model.ThinkingLevel)
+		} else {
+			botConfig.Model.Config.ThinkingConfig.ThinkingLevel = genai.ThinkingLevelUnspecified
+		}
 	}
 	if botConfig.Model.UseInternet {
 		botConfig.Model.Config.Tools = []*genai.Tool{{GoogleSearch: &genai.GoogleSearch{}}}
@@ -303,8 +323,9 @@ func Start() {
 	})
 	syncer.OnEventType(event.EventMessage, evtMsg)
 
-	go startRoomCleanupTask()    //GC_1
-	go clearNonExistRoomMemory() //GC_2
+	go startRoomCleanupTask()       //GC_1
+	go clearNonExistRoomMemory()    //GC_2
+	go startImageCacheCleanupTask() //GC_3
 	go startBillingCheckTask()
 
 	log.Printf("Robot sucessfully initialize! %s now is runing!", client.UserID.String())
