@@ -1,5 +1,5 @@
 APP_NAME = ./dist/nozomi
-src = ./cmd
+src = ./cmd/nozomi/main.go
 BUILD_FLAGS = -tags goolm -ldflags="-w -s"
 
 .PHONY: all

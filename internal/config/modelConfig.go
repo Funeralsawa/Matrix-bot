@@ -4,24 +4,7 @@ import (
 	"time"
 
 	"google.golang.org/genai"
-	"maunium.net/go/mautrix/id"
 )
-
-type BotConfig struct {
-	Client ClientConfig `yaml:"CLIENT"`
-	Model  ModelConfig  `yaml:"MODEL"`
-}
-
-type ClientConfig struct {
-	HomeserverURL   string    `yaml:"homeserverURL"`
-	UserID          id.UserID `yaml:"userID"`
-	AccessToken     string    `yaml:"accessToken"`
-	DeviceID        id.UserID `yaml:"deviceID"`
-	LogRoom         []string  `yaml:"logRoom"`
-	MaxMemoryLength int       `yaml:"maxMemoryLength"`
-	AvatarURL       string    `yaml:"avatarURL"`
-	DisplayName     string    `yaml:"displayName"`
-}
 
 type ModelConfig struct {
 	API_KEY          string                       `yaml:"API_KEY"`
@@ -32,7 +15,6 @@ type ModelConfig struct {
 	SecureCheck      bool                         `yaml:"secureCheck"`
 	MaxMonthlySearch int                          `yaml:"maxMonthlySearch"`
 	TimeOutWhen      time.Duration                `yaml:"timeOutWhen"`
-	DatabasePassword string                       `yaml:"databasePassword"`
 	IncludeThoughts  bool                         `yaml:"includeThoughts"`
 	ThinkingBudget   int32                        `yaml:"thinkingBudget"`
 	ThinkingLevel    string                       `yaml:"thinkingLevel"`
