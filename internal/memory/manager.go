@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -68,14 +69,18 @@ func (m *Manager) AddUserMsgAndLoad(roomID string, text string, imgPart *genai.P
 	// 组装当前这句发言的 Parts
 	var currentParts []*genai.Part
 	cachedImgs := m.pullPrivateImageCache(roomID)
+	now := time.Now().Format("2006-01-02 15:04:05")
 	if len(cachedImgs) > 0 {
+		label := fmt.Sprintf("(%s)发送了一组图片：", now)
+		currentParts = append(currentParts, genai.Text(label)[0].Parts[0])
 		currentParts = append(currentParts, cachedImgs...)
+	}
+	if text != "" {
+		text = fmt.Sprintf("(%s) %s", now, text)
+		currentParts = append(currentParts, genai.Text(text)[0].Parts[0])
 	}
 	if imgPart != nil {
 		currentParts = append(currentParts, imgPart)
-	}
-	if text != "" {
-		currentParts = append(currentParts, genai.Text(text)[0].Parts[0])
 	}
 
 	if len(currentParts) == 0 {

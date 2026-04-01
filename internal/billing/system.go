@@ -36,7 +36,6 @@ func (s *System) Record(input, output, think int32) {
 	s.usage.Month.Add(input, output, think)
 	s.usage.Year.Add(input, output, think)
 
-	// 每次记录完立刻落盘，防止断电丢失
 	s.saveTokenUsage()
 }
 

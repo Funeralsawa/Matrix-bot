@@ -2,6 +2,7 @@ package matrix
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -91,7 +92,10 @@ func (c *Client) ParseMessage(ctx context.Context, evt *event.Event) (*MessageCo
 		req = fmt.Sprintf("(引用回复了：“%s”)\n%s", quote, reply)
 	} else if msg.RelatesTo != nil && msg.RelatesTo.InReplyTo != nil {
 		// 处理 MSC2802 原生回复
-		origText := c.fetchAndDecryptRemoteEvent(ctx, evt.RoomID, msg.RelatesTo.InReplyTo.EventID)
+		origText, err := c.fetchAndDecryptRemoteEvent(ctx, evt.RoomID, msg.RelatesTo.InReplyTo.EventID)
+		if err != nil {
+			return nil, err
+		}
 		if origText != "" {
 			req = fmt.Sprintf("(引用回复了：“%s”)\n%s", origText, req)
 		}
@@ -227,23 +231,28 @@ func (c *Client) downloadAndDecryptImage(ctx context.Context, msg *event.Message
 	return data, mime
 }
 
-func (c *Client) fetchAndDecryptRemoteEvent(ctx context.Context, roomID id.RoomID, eventID id.EventID) string {
+func (c *Client) fetchAndDecryptRemoteEvent(ctx context.Context, roomID id.RoomID, eventID id.EventID) (string, error) {
 	evt, err := c.client.GetEvent(ctx, roomID, eventID)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	if evt.Type == event.EventEncrypted && c.crypto != nil {
-		dec, err := c.crypto.Decrypt(ctx, evt)
-		if err == nil {
-			evt = dec
+		err = evt.Content.ParseRaw(evt.Type) // 将 Raw JSON 反序列化为底层解密引擎需要的结构体
+		if err != nil && !errors.Is(err, event.ErrContentAlreadyParsed) {
+			return "", err
 		}
+		dec, err := c.crypto.Decrypt(ctx, evt)
+		if err != nil {
+			return "", err
+		}
+		evt = dec
 	}
 	m := evt.Content.AsMessage()
 	if m == nil {
-		return ""
+		return "", nil
 	}
 	_, reply := c.extractReply(m.Body) // 剥离历史消息本身的引用
-	return reply
+	return reply, nil
 }
 
 func (c *Client) checkMention(evt *event.Event, body string) bool {
@@ -293,10 +302,16 @@ func (c *Client) GetProfile() (string, string, error) {
 
 func (c *Client) SetProfile(name, avatar string) error {
 	if name != "" {
-		_ = c.client.SetDisplayName(context.Background(), name)
+		err := c.client.SetDisplayName(context.Background(), name)
+		if err != nil {
+			return err
+		}
 	}
 	if avatar != "" {
-		uri, _ := id.ParseContentURI(avatar)
+		uri, err := id.ParseContentURI(avatar)
+		if err != nil {
+			return err
+		}
 		_ = c.client.SetAvatarURL(context.Background(), uri)
 	}
 	return nil

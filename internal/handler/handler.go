@@ -54,21 +54,38 @@ func (r *Router) HandleMessage(ctx context.Context, evt *event.Event) {
 	// 2. 委托 Matrix 领域解析消息
 	msgCtx, err := r.matrix.ParseMessage(ctx, evt)
 	if err != nil {
+		if err.Error() != "not a message event" {
+			str := "用户：" + evt.Sender.String() + "\n"
+			str += "房间：" + evt.RoomID.String() + "\n"
+			str += "请求：" + msgCtx.Text + "\n"
+			str += "时间：" + time.UnixMilli(evt.Timestamp).Format("2006-01-02 15:04:05") + "\n"
+			str += "错误：" + "Failed to parse message: " + err.Error()
+
+			_ = r.matrix.SendText(ctx, evt.RoomID, "Sorry, I need rest.Pls try again later.")
+			_ = r.logger.Log("error", "Failed to parse message: "+err.Error(), logger.Options{})
+			errs := r.matrix.SendToLogRoom(ctx, str)
+			for _, err := range errs {
+				str := "Sending log to log-room error: " + err.Error()
+				_ = r.logger.Log("error", str, logger.Options{})
+			}
+		}
 		return
 	}
 
 	roomID := evt.RoomID.String()
 	sender := evt.Sender.String()
+	evtTime := time.UnixMilli(evt.Timestamp).Format("2006/01/02 15:04")
 
 	// 4. 调用 Matrix 领域获取房间人数，判定聊天类型
 	memberCount, err := r.matrix.GetRoomMemberCount(ctx, roomID)
 	if err != nil {
+		r.logger.Log("error", "Failed to get room member count: "+err.Error(), logger.Options{})
 		return
 	}
 	isGroup := memberCount > 2
 	if isGroup {
 		// 群聊逻辑
-		msgCtx.Text = fmt.Sprintf("%s 发言：%s\n", sender, msgCtx.Text)
+		msgCtx.Text = fmt.Sprintf("[%s] %s 发言：%s\n", evtTime, sender, msgCtx.Text)
 	} else {
 		// 私聊逻辑
 		msgCtx.IsMentioned = true
@@ -82,6 +99,8 @@ func (r *Router) HandleMessage(ctx context.Context, evt *event.Event) {
 			_ = r.matrix.SendText(ctx, id.RoomID(roomID), str)
 			return
 		}
+
+		msgCtx.Text = fmt.Sprintf("[%s] %s\n", evtTime, msgCtx.Text)
 	}
 
 	// 5. 委托 Memory 领域：记录群友说的话，并取出极其安全的上下文深拷贝
@@ -111,20 +130,25 @@ func (r *Router) HandleMessage(ctx context.Context, evt *event.Event) {
 			str += "时间：" + time.UnixMilli(evt.Timestamp).Format("2006-01-02 15:04:05") + "\n"
 
 			errMsg := err.Error()
+
 			isLocalTimeout := errors.Is(err, context.DeadlineExceeded)
 			isRemoteTimeout := strings.Contains(errMsg, "DEADLINE_EXCEEDED") || strings.Contains(errMsg, "504")
 			if isLocalTimeout || isRemoteTimeout {
 				str += "大模型调用超时！"
-				_ = r.matrix.SendText(ctx, evt.RoomID, "Network congestion.Please try again later.")
+				_ = r.matrix.SendText(bgCtx, evt.RoomID, "Network congestion.Please try again later.")
 				_ = r.logger.Log("error", "Call LLM time out.", logger.Options{})
 			} else {
-				_ = r.matrix.SendText(ctx, evt.RoomID, "Sorry, I need rest.")
+				_ = r.matrix.SendText(bgCtx, evt.RoomID, "Sorry, I need rest.Please try again later")
 				_ = r.logger.Log("error", fmt.Sprintf("Gemini meet an error: %s", err.Error()), logger.Options{})
 
 				str += "错误：" + err.Error()
 			}
 
-			r.matrix.SendToLogRoom(ctx, str)
+			errs := r.matrix.SendToLogRoom(bgCtx, str)
+			for _, err := range errs {
+				str := "Sending log to log-room error: " + err.Error()
+				_ = r.logger.Log("error", str, logger.Options{})
+			}
 			return
 		}
 
@@ -165,9 +189,20 @@ func (r *Router) HandleMessage(ctx context.Context, evt *event.Event) {
 		// 10. 委托 Matrix 领域：将富文本渲染并发送到房间
 		err = r.matrix.SendMarkdown(bgCtx, rID, res.RawText)
 		if err != nil {
-			_ = r.logger.Log("error", "Failed to send message to room: "+err.Error(), logger.Options{})
+			str := "用户：" + evt.Sender.String() + "\n"
+			str += "房间：" + evt.RoomID.String() + "\n"
+			str += "请求：" + msgCtx.Text + "\n"
+			str += "时间：" + time.UnixMilli(evt.Timestamp).Format("2006-01-02 15:04:05") + "\n"
+			str += "错误：" + "Failed to send rich message to room: " + err.Error()
+			_ = r.matrix.SendText(bgCtx, evt.RoomID, "sorry, I need rest, please try again later.")
+			_ = r.logger.Log("error", "Failed to send rich message to room: "+err.Error(), logger.Options{})
+			errs := r.matrix.SendToLogRoom(bgCtx, str)
+			for _, err := range errs {
+				str := "Sending log to log-room error: " + err.Error()
+				_ = r.logger.Log("error", str, logger.Options{})
+			}
+			return
 		}
-
 	}(history, msgCtx.Text, evt.Sender, evt.RoomID)
 }
 
@@ -181,9 +216,19 @@ func (r *Router) HandleMember(ctx context.Context, evt *event.Event) {
 	switch memberEvent.Membership {
 	case event.MembershipInvite:
 		// 委托 Matrix 领域：自动同意加入房间
-		err := r.matrix.JoinRoom(ctx, evt.RoomID)
+		rooms, err := r.matrix.GetJoinedRooms(ctx)
+		if err != nil {
+			_ = r.logger.Log("error", "Get joined rooms error: "+err.Error(), logger.Options{})
+			return
+		}
+		for _, room := range rooms {
+			if room == evt.RoomID.String() {
+				return
+			}
+		}
+		err = r.matrix.JoinRoom(ctx, evt.RoomID)
 		if err == nil {
-			r.matrix.SendText(ctx, evt.RoomID, "你好，我是希。")
+			_ = r.matrix.SendText(ctx, evt.RoomID, "你好，我是希。")
 			_ = r.logger.Log("info", "Auto accept room invite: "+evt.RoomID.String(), logger.Options{})
 		}
 	case event.MembershipLeave, event.MembershipBan:

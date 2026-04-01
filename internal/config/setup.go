@@ -19,9 +19,6 @@ type TimeLog struct {
 	Time time.Time `json:"Time"`
 }
 
-// Token, ConsumeToken 的定义建议留在 billing 包，这里只写空 JSON
-type emptyConsumeToken struct{}
-
 func isExist(path string) (bool, error) {
 	_, err := os.Stat(path)
 	if err == nil {
@@ -108,7 +105,6 @@ func setupEnv(workdir string) {
 	tokenUsagePath := filepath.Join(workdir, "data", "token_usage.json")
 	if ok, _ := isExist(tokenUsagePath); !ok {
 		log.Println("token_usage.json does not exist, creating...")
-		// 这里不再强依赖 billing 包的结构体，直接写入初始化的 JSON
 		bytes := []byte("{\n\t\"Day\": {\n\t\t\"Input\": 0,\n\t\t\"Output\": 0,\n\t\t\"Think\": 0\n\t},\n\t\"Month\": {\n\t\t\"Input\": 0,\n\t\t\"Output\": 0,\n\t\t\"Think\": 0\n\t},\n\t\"Year\": {\n\t\t\"Input\": 0,\n\t\t\"Output\": 0,\n\t\t\"Think\": 0\n\t}\n}")
 		err := os.WriteFile(tokenUsagePath, bytes, 0644)
 		if err != nil {

@@ -91,7 +91,6 @@ func (a *App) nonExistRoomCleanupLoop(ctx context.Context) {
 				_ = a.Logger.Log("error", "Failed to retrieve the list of joined rooms when clear non-exist room Memories", logger.Options{})
 				continue
 			}
-			// 将存活名单甩给内存领域，让它把不在名单里的幽灵全杀掉
 			a.Memory.RetainOnly(rooms)
 			_ = a.Logger.Log("info", "Auto cleared memory for non-exist rooms.", logger.Options{})
 		}
@@ -113,24 +112,26 @@ func (a *App) billingCheckLoop(ctx context.Context) {
 
 			// 2. 调度 Matrix 领域，把报表投递到所有的日志管理群
 			for _, report := range reports {
-				a.Matrix.SendToLogRoom(ctx, report)
+				errs := a.Matrix.SendToLogRoom(ctx, report)
+				for _, err := range errs {
+					_ = a.Logger.Log("error", "Sending log to log-room error: "+err.Error(), logger.Options{})
+				}
 			}
 		}
 	}
 }
 
-// 对应原 botInfo.go 的守护进程
 func (a *App) profileKeeperLoop(ctx context.Context) {
 	ticker := time.NewTicker(24 * time.Hour)
 	defer ticker.Stop()
 
-	// 极其严谨：程序刚启动时，强制执行一次查岗
+	// 程序刚启动时，强制执行一次查岗
 	a.checkAndRestoreProfile()
 
 	for {
 		select {
 		case <-ctx.Done():
-			return // 收到系统退出信号，保安下班
+			return
 		case <-ticker.C:
 			a.checkAndRestoreProfile()
 		}
@@ -142,7 +143,6 @@ func (a *App) checkAndRestoreProfile() {
 	cfgName := a.Config.Client.DisplayName
 	cfgAvatar := a.Config.Client.AvatarURL
 
-	// 如果配置文件里压根没填名字和头像，就不用巡检了
 	if cfgName == "" && cfgAvatar == "" {
 		return
 	}
@@ -150,7 +150,7 @@ func (a *App) checkAndRestoreProfile() {
 	// 1. 调用 Matrix 领域：获取当前服务器上的真实情况
 	currentName, currentAvatar, err := a.Matrix.GetProfile()
 	if err != nil {
-		_ = a.Logger.Log("error", "ProfileKeeper 获取资料失败: "+err.Error(), logger.Options{})
+		_ = a.Logger.Log("error", "Get profile data : "+err.Error(), logger.Options{})
 		return
 	}
 
@@ -158,25 +158,25 @@ func (a *App) checkAndRestoreProfile() {
 	updateName := ""
 	updateAvatar := ""
 
-	// 2. 比对昵称：发现被篡改或丢失，准备恢复
+	// 2. 比对昵称
 	if cfgName != "" && currentName != cfgName {
 		needsUpdate = true
 		updateName = cfgName
 	}
 
-	// 3. 比对头像：发现头像被清空或不一致，准备恢复
+	// 3. 比对头像
 	if cfgAvatar != "" && currentAvatar != cfgAvatar {
 		needsUpdate = true
 		updateAvatar = cfgAvatar
 	}
 
-	// 4. 执行修复：委托 Matrix 领域重新把脸和名字挂上去
+	// 4. 执行修复：委托 Matrix 领域重新把头像和名字挂上去
 	if needsUpdate {
 		err := a.Matrix.SetProfile(updateName, updateAvatar)
 		if err != nil {
-			_ = a.Logger.Log("error", "ProfileKeeper 恢复资料失败: "+err.Error(), logger.Options{})
+			_ = a.Logger.Log("error", "ProfileKeeper can't restore profile: "+err.Error(), logger.Options{})
 		} else {
-			_ = a.Logger.Log("info", "ProfileKeeper 成功触发资料自愈！", logger.Options{})
+			_ = a.Logger.Log("info", "ProfileKeeper sucessfully restored profile.", logger.Options{})
 		}
 	}
 }
