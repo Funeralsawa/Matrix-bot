@@ -366,11 +366,11 @@ func (c *Client) fetchAndDecryptRemoteEvent(ctx context.Context, roomID id.RoomI
 	if err != nil {
 		return nil, err
 	}
+	err = evt.Content.ParseRaw(evt.Type) // 将 Raw JSON 反序列化为底层解密引擎需要的结构体
+	if err != nil && !errors.Is(err, event.ErrContentAlreadyParsed) {
+		return nil, err
+	}
 	if evt.Type == event.EventEncrypted && c.crypto != nil {
-		err = evt.Content.ParseRaw(evt.Type) // 将 Raw JSON 反序列化为底层解密引擎需要的结构体
-		if err != nil && !errors.Is(err, event.ErrContentAlreadyParsed) {
-			return nil, err
-		}
 		dec, err := c.crypto.Decrypt(ctx, evt)
 		if err != nil {
 			return nil, err

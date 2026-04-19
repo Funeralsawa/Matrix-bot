@@ -27,10 +27,10 @@ func (r *Router) FormatMessageContexts(msgCtxs []*matrix.MessageContext, isGroup
 		nodeTime := time.UnixMilli(mCtx.EventTime).Format("2006/01/02 15:04")
 		if len(msgCtxs) > 1 {
 			if i < len(msgCtxs)-1 {
-				combinedTextBuilder.WriteString(fmt.Sprintf("【Historical citation hierarchy %d】[%s] %s 发言：%s\n", i+1, nodeTime, mCtx.Sender, mCtx.Text))
+				combinedTextBuilder.WriteString(fmt.Sprintf("【Historical citation hierarchy %d】[%s] %s say：%s\n", i+1, nodeTime, mCtx.Sender, mCtx.Text))
 			} else {
 				if isGroup {
-					combinedTextBuilder.WriteString(fmt.Sprintf("【Latest comments】[%s] %s 发言：%s\n", nodeTime, mCtx.Sender, mCtx.Text))
+					combinedTextBuilder.WriteString(fmt.Sprintf("【Latest comments】[%s] %s say：%s\n", nodeTime, mCtx.Sender, mCtx.Text))
 				} else {
 					combinedTextBuilder.WriteString(fmt.Sprintf("【Latest comments】[%s] %s\n", nodeTime, mCtx.Text))
 				}

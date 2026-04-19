@@ -80,6 +80,7 @@ func (a *App) Start(ctx context.Context) error {
 	a.StartBackgroundTasks(ctx)
 
 	a.Matrix.OnEvent(event.EventMessage, a.Router.HandleMessage)
+	a.Matrix.OnEvent(event.EventSticker, a.Router.HandleMessage)
 	a.Matrix.OnEvent(event.StateMember, a.Router.HandleMember)
 
 	log.Println("Bot internal engines fully operational.")

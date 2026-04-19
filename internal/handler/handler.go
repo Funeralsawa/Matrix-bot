@@ -48,14 +48,14 @@ func NewRouter(m *matrix.Client, l *llm.Client, mem *memory.Manager, b *billing.
 	}
 }
 
-// HandleMessage 专门处理 m.room.message 事件
+// HandleMessage 专门处理群聊信息事件，包括 m.room.message 和 event.EventSticker
 func (r *Router) HandleMessage(ctx context.Context, evt *event.Event) {
-	// 1. 无视启动前的消息和自己发的消息
+	// 无视启动前的消息和自己发的消息
 	if time.UnixMilli(evt.Timestamp).Before(r.bootTime) || evt.Sender == r.cfg.Client.UserID {
 		return
 	}
 
-	// 2. 房间类型判断
+	// 房间类型判断
 	memberCount, err := r.matrix.GetRoomMemberCount(ctx, evt.RoomID.String())
 	if err != nil {
 		r.logger.Log("error", "Failed to get room member count: "+err.Error(), logger.Options{})
@@ -63,7 +63,7 @@ func (r *Router) HandleMessage(ctx context.Context, evt *event.Event) {
 	}
 	isGroup := memberCount > 2
 
-	// 2. 委托 Matrix 领域解析消息
+	// 解析消息
 	msgCtxs, err := r.matrix.ParseMessage(ctx, evt, 1)
 	if err != nil {
 		if err.Error() != "not a message event" && err.Error() != "Not support of gif image." {
@@ -92,7 +92,7 @@ func (r *Router) HandleMessage(ctx context.Context, evt *event.Event) {
 	roomID := evt.RoomID.String()
 	sender := evt.Sender.String()
 
-	// 4. 私聊逻辑
+	// 私聊逻辑
 	if !isGroup {
 		currentCtx.IsMentioned = true
 
@@ -104,7 +104,7 @@ func (r *Router) HandleMessage(ctx context.Context, evt *event.Event) {
 		}
 
 		if isPureImageOrSticker {
-			// 委托 Memory 领域暂存当前这张图
+			// 暂存当前这张图
 			imgCount := r.memory.AddPrivateImageCache(roomID, currentCtx.ImagePart)
 			str := fmt.Sprintf("Receive picture %d.Please provide a written description within 5 minutes.", imgCount)
 			_ = r.matrix.SendText(ctx, id.RoomID(roomID), str)
@@ -112,10 +112,10 @@ func (r *Router) HandleMessage(ctx context.Context, evt *event.Event) {
 		}
 	}
 
-	// 5. 委托 Memory 领域：记录群友说的话，并取出安全的上下文深拷贝
+	// 记录群友说的话，并取出安全的上下文深拷贝
 	history := r.memory.AddUserMsgAndLoad(roomID, isGroup, finalText, finalImages...)
 
-	// 6. 如果没有关键字，只记入记忆
+	// 如果没有关键字，只记入记忆
 	if !currentCtx.IsMentioned {
 		return
 	}
@@ -139,14 +139,16 @@ func (r *Router) HandleMessage(ctx context.Context, evt *event.Event) {
 		return
 	}
 
-	// 7. 开启独立工作协程，不阻塞 Matrix 的主接收线程
+	// 开启独立工作协程，不阻塞 Matrix 的主接收线程
 	go func(safeHistory []*genai.Content, text string, sender id.UserID, rID id.RoomID, isGroup bool) {
 		bgCtx := context.Background()
 
 		// 发送已读回执
 		err := r.matrix.MarkRead(bgCtx, rID, evt.ID)
 		if err != nil {
-			r.logger.Log("error", "Failed to send read receipt: "+err.Error(), logger.Options{})
+			str := fmt.Sprintf("Failed to send read receipt to room %v: %v", rID, err)
+			r.logger.Log("error", str, logger.Options{})
+			r.matrix.SendToLogRoom(bgCtx, str)
 		}
 
 		// 模拟人类输入
@@ -172,8 +174,19 @@ func (r *Router) HandleMessage(ctx context.Context, evt *event.Event) {
 			dynamicConfig = r.llm.GetConfigWithoutSearch()
 		}
 
-		// 委托 LLM 领域：发起思考与生成
-		res, usage, err := r.llm.Generate(bgCtx, safeHistory, dynamicConfig)
+		// Call LLM
+		var (
+			res   *llm.GenerateResult
+			usage *llm.TokenUsage
+		)
+		for retry := 0; retry < 2; retry++ {
+			res, usage, err = r.llm.Generate(bgCtx, safeHistory, dynamicConfig)
+			if err != nil {
+				r.logger.Log("error", err.Error(), logger.Options{})
+			} else {
+				break
+			}
+		}
 		if err != nil {
 			str := "user: " + sender.String() + "\n"
 			str += "room: " + rID.String() + "\n"
@@ -205,7 +218,7 @@ func (r *Router) HandleMessage(ctx context.Context, evt *event.Event) {
 		}
 
 		if res.UsedSearch {
-			// 委托 Quota 领域：扣减一次额度
+			// 扣减一次额度
 			r.quota.Consume()
 		}
 
@@ -219,7 +232,7 @@ func (r *Router) HandleMessage(ctx context.Context, evt *event.Event) {
 		)
 		_ = r.logger.Log("bot", text+tokenConsume, logger.Options{UserID: sender.String(), RoomID: rID.String()})
 
-		// 委托 Billing 领域：安全地记账
+		// 安全地记账
 		r.billing.Record(usage.Input, usage.Output, usage.Think)
 		if r.billing.CheckAlarm(usage.Input + usage.Output + usage.Think) {
 			str := "Dosage Alert!\n"
@@ -234,7 +247,7 @@ func (r *Router) HandleMessage(ctx context.Context, evt *event.Event) {
 			}
 		}
 
-		// 9. 确认是否需要执行记忆回传算法
+		// 确认是否需要执行记忆回传算法
 		nowHistoryLen := r.memory.GetHistoryLen(safeHistory)
 		needMemoryRetrospection := nowHistoryLen >= r.cfg.Client.MaxMemoryLength && !isGroup
 		if needMemoryRetrospection && r.memory.TryLockRoomSummarization(rID) {
@@ -242,10 +255,10 @@ func (r *Router) HandleMessage(ctx context.Context, evt *event.Event) {
 			go r.ExecuteMemoryRetrospection(oldH, summarizedPartCount, rID)
 		}
 
-		// 10. 委托 Memory 领域：将大模型的纯净回复写入记忆
+		// 将大模型的纯净回复写入记忆
 		r.memory.AddModelMsg(rID.String(), isGroup, res.CleanParts)
 
-		// 11. 委托 Matrix 领域：将富文本渲染并发送到房间
+		// 将富文本渲染并发送到房间
 		err = r.matrix.SendMarkdownWithMath(bgCtx, rID, res.RawText)
 		if err != nil {
 			str := "user: " + sender.String() + "\n"
@@ -274,7 +287,7 @@ func (r *Router) HandleMember(ctx context.Context, evt *event.Event) {
 
 	switch memberEvent.Membership {
 	case event.MembershipInvite:
-		// 委托 Matrix 领域：自动同意加入房间
+		// 自动同意加入房间
 		rooms, err := r.matrix.GetJoinedRooms(ctx)
 		if err != nil {
 			_ = r.logger.Log("error", "Get joined rooms error: "+err.Error(), logger.Options{})
@@ -291,7 +304,7 @@ func (r *Router) HandleMember(ctx context.Context, evt *event.Event) {
 			_ = r.logger.Log("info", "Auto accept room invite: "+evt.RoomID.String(), logger.Options{})
 		}
 	case event.MembershipLeave, event.MembershipBan:
-		// 委托 Memory 领域：被踢出或退出时，物理清除该房间的所有记忆
+		// 被踢出或退出时，物理清除该房间的所有记忆
 		r.memory.Delete(evt.RoomID.String())
 		_ = r.logger.Log("info", "Auto clear memory of didn't join room: "+evt.RoomID.String(), logger.Options{})
 	}

@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -94,11 +95,11 @@ func (c *Client) GetConfigWithoutSearch() *genai.GenerateContentConfig {
 // Generate 封装了大模型的调用、提取、过滤逻辑
 // 参数 dynamicConfig 允许外层在搜索配额耗尽时，传入一个剥夺了 Tools 的浅拷贝配置
 func (c *Client) Generate(ctx context.Context, history []*genai.Content, dynamicConfig *genai.GenerateContentConfig) (*GenerateResult, *TokenUsage, error) {
-	// 1. 设置严格的超时熔断
+	// 设置严格的超时熔断
 	timeoutCtx, cancel := context.WithTimeout(ctx, c.cfg.TimeOutWhen)
 	defer cancel()
 
-	// 2. 发起 API 请求
+	// 发起 API 请求
 	reqConf := c.cfg.Config
 	if dynamicConfig != nil {
 		reqConf = dynamicConfig
@@ -110,28 +111,38 @@ func (c *Client) Generate(ctx context.Context, history []*genai.Content, dynamic
 		return nil, nil, err
 	}
 
-	// 3. 拦截静默报错与空回复
+	// 拦截静默报错与空回复
 	if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
-		return nil, nil, errors.New("the model returned a null value and has been inhibited")
+		return nil, nil, errors.New("The model returned a null value and has been inhibited")
 	}
 
-	// 4. 分离并计算 Token
+	// 捕捉模型后台系统掐断导致的错误
+	if resp.Candidates[0].FinishReason != genai.FinishReasonStop {
+		return nil, nil, fmt.Errorf("The model meet a content generating error: %v", resp.Candidates[0].FinishReason)
+	}
+
+	// 分离并计算 Token
 	usage := &TokenUsage{
 		Input:  resp.UsageMetadata.PromptTokenCount,
 		Output: resp.UsageMetadata.CandidatesTokenCount,
+		Think:  resp.UsageMetadata.ThoughtsTokenCount,
 	}
-	usage.Think = resp.UsageMetadata.TotalTokenCount - usage.Output - usage.Input
 
-	// 5. 提取文本与格式清洗
+	// 提取文本与格式清洗
 	raw := resp.Text()
 	raw = strings.TrimSpace(raw)
 	re := regexp.MustCompile(`\n{3,}`)
 	raw = re.ReplaceAllString(raw, "\n\n")
 
-	// 6. 构造纯净记忆块
-	cleanParts := genai.Text(raw)[0].Parts
+	// 构造纯净记忆块
+	var cleanParts []*genai.Part
+	if raw != "" {
+		cleanParts = genai.Text(raw)[0].Parts
+	} else {
+		cleanParts = genai.Text("(This is a empty string)")[0].Parts
+	}
 
-	// 7. 检查是否使用了联网搜寻
+	// 检查是否使用了联网搜寻
 	usedSearch := false
 	if len(resp.Candidates) > 0 && resp.Candidates[0].GroundingMetadata != nil {
 		meta := resp.Candidates[0].GroundingMetadata
