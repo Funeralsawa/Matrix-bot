@@ -79,6 +79,9 @@ func (a *App) Start(ctx context.Context) error {
 	// 启动后台任务线程
 	a.StartBackgroundTasks(ctx)
 
+	// 初始化定时任务
+	a.InitCronJob()
+
 	a.Matrix.OnEvent(event.EventMessage, a.Router.HandleMessage)
 	a.Matrix.OnEvent(event.EventSticker, a.Router.HandleMessage)
 	a.Matrix.OnEvent(event.StateMember, a.Router.HandleMember)

@@ -16,7 +16,7 @@ import (
 	"maunium.net/go/mautrix/id"
 )
 
-type Task struct {
+type CommandTask struct {
 	RoomID   id.RoomID
 	SenderID id.UserID
 	TaskID   string

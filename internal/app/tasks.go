@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"nozomi/internal/logger"
+	"nozomi/tools"
 
 	"maunium.net/go/mautrix/id"
 )
@@ -62,16 +63,27 @@ func (a *App) roomCleanupLoop(ctx context.Context) {
 					continue
 				}
 
-				if count <= 1 {
-					if err := a.Matrix.LeaveRoom(ctx, roomID); err == nil {
-						a.Memory.Delete(roomID)
-						_ = a.Logger.Log("info", "Exit the empty room sucessfully and cleared memory: "+roomID, logger.Options{})
-					} else {
-						a.Matrix.SendToLogRoom(ctx, "Failed to exit the empty room: "+roomID)
+				if count > 1 {
+					continue
+				}
+
+				if err := a.Matrix.LeaveRoom(ctx, roomID); err == nil {
+					a.Memory.Delete(roomID)
+					cronjobs := tools.RemoveCronJobWithRoomID(id.RoomID(roomID))
+					for _, uuid := range cronjobs {
+						err := a.Router.DelCronFromFile(uuid)
+						if err != nil {
+							a.Logger.Log("error", "Unable to delete cron job from file: "+uuid, logger.Options{})
+							continue
+						}
+						a.Logger.Log("info", "Sucessfully delete cron job from file: "+uuid, logger.Options{})
 					}
+					_ = a.Logger.Log("info", "Exit the empty room sucessfully and cleared memory: "+roomID, logger.Options{})
+				} else {
+					_ = a.Logger.Log("error", "Failed to exit the empty room: "+roomID, logger.Options{})
+					a.Matrix.SendToLogRoom(ctx, "Failed to exit the empty room: "+roomID)
 				}
 			}
-			_ = a.Logger.Log("info", "The empty room cleanup task has done.", logger.Options{})
 		}
 	}
 }
@@ -92,6 +104,15 @@ func (a *App) nonExistRoomCleanupLoop(ctx context.Context) {
 				continue
 			}
 			a.Memory.RetainOnly(rooms)
+			cronJobs := tools.RemoveCronJobFromInactiveRoom(rooms)
+			for _, uuid := range cronJobs {
+				err := a.Router.DelCronFromFile(uuid)
+				if err != nil {
+					a.Logger.Log("error", "Unable to delete cron job from file: "+uuid, logger.Options{})
+					continue
+				}
+				a.Logger.Log("info", "Sucessfully delete cron job from file: "+uuid, logger.Options{})
+			}
 			_ = a.Logger.Log("info", "Auto cleared memory for non-exist rooms.", logger.Options{})
 		}
 	}
@@ -145,7 +166,7 @@ func (a *App) checkAndRestoreProfile() {
 		return
 	}
 
-	// 获取当前服务器上的真实情况
+	// 获取当前服务器上的profile
 	currentName, currentAvatar, err := a.Matrix.GetProfile()
 	if err != nil {
 		_ = a.Logger.Log("error", "Get profile data : "+err.Error(), logger.Options{})

@@ -67,7 +67,12 @@ func NewClient(botCfg *config.BotConfig) (*Client, error) {
 	}
 
 	// 工具与安全审查配置
-	botCfg.Model.Config.Tools = []*genai.Tool{tools.TerminalTool}
+	botCfg.Model.Config.Tools = []*genai.Tool{
+		tools.TerminalTool,
+		tools.CronJobTool,
+		tools.CronJobList,
+		tools.RemoveCronJob,
+	}
 	if botCfg.Model.UseInternet {
 		botCfg.Model.Config.Tools = append(botCfg.Model.Config.Tools, &genai.Tool{GoogleSearch: &genai.GoogleSearch{}})
 	}

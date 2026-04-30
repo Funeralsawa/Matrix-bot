@@ -2,11 +2,15 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"nozomi/internal/llm"
 	"nozomi/internal/logger"
 	"nozomi/internal/matrix"
 	"nozomi/tools"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -88,30 +92,19 @@ func (r *Router) ExecuteMemoryRetrospection(oldH []*genai.Content, sumCount int,
 	}
 }
 
-func (r *Router) checkIsPendingTask(ctx context.Context, text string, roomID id.RoomID, sender id.UserID) bool {
-	if strings.HasPrefix(text, "/YES ") {
-		taskID := strings.TrimSpace(strings.TrimPrefix(text, "/YES "))
+func (r *Router) checkSenderHasFunCallPower(sender id.UserID) bool {
+	return slices.Contains(r.cfg.Auth.AdminID, sender)
+}
 
-		// 查找是否有这个 task_id 在等待
-		if ch, ok := r.pendingApprovals.Load(tools.Task{RoomID: roomID, SenderID: sender, TaskID: taskID}); ok {
-			waitChan := ch.(chan bool)
-			r.matrix.SendText(ctx, roomID, "Authorized task: "+taskID)
-			waitChan <- true // 发送放行信号，唤醒等待的协程
-		} else {
-			r.matrix.SendText(ctx, roomID, "Invalid or expired task ID")
-		}
-		return true
-	}
+func (r *Router) WriteCronToFile(ctx context.Context, task tools.CronTask) error {
+	path := filepath.Join(r.cfg.WorkDir, "cron", fmt.Sprintf("%s.json", task.UUID))
+	bytes, err := json.Marshal(task)
+	err = os.WriteFile(path, bytes, 0644)
+	return err
+}
 
-	if strings.HasPrefix(text, "/NO ") {
-		taskID := strings.TrimSpace(strings.TrimPrefix(text, "/NO "))
-		if ch, ok := r.pendingApprovals.Load(tools.Task{RoomID: roomID, SenderID: sender, TaskID: taskID}); ok {
-			waitChan := ch.(chan bool)
-			r.matrix.SendText(ctx, roomID, "Task rejected: "+taskID)
-			waitChan <- false // 发送拒绝信号
-		}
-		return true
-	}
-
-	return false
+func (r *Router) DelCronFromFile(uuid string) error {
+	path := filepath.Join(r.cfg.WorkDir, "cron", fmt.Sprintf("%s.json", uuid))
+	err := os.Remove(path)
+	return err
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+	"maunium.net/go/mautrix/id"
 )
 
 type SearchQuota struct {
@@ -44,7 +45,33 @@ func setupEnv(workdir string) {
 	configPath := filepath.Join(workdir, "config.yaml")
 	if ok, _ := isExist(configPath); !ok {
 		log.Println("config.yaml does not exist, creating...")
-		data := BotConfig{}
+		data := BotConfig{
+			Client: ClientConfig{
+				LogRoom:               []string{},
+				MaxMemoryLength:       14,
+				WhenRetroRemainMemLen: 6,
+				DisplayName:           "Nozomi",
+				DatabasePassword:      "123456",
+			},
+			Model: ModelConfig{
+				Model:            "gemini-3.1-flash-lite-preview",
+				PrefixToCall:     "!c",
+				MaxOutputToken:   3000,
+				AlargmTokenCount: 4000,
+				UseInternet:      true,
+				SecureCheck:      false,
+				MaxMonthlySearch: 4000,
+				TimeOutWhen:      30 * time.Second,
+				IncludeThoughts:  true,
+				ThinkingBudget:   0,
+				ThinkingLevel:    "high",
+				Rate:             0.20,
+				RateBurst:        1,
+			},
+			Auth: AuthConfig{
+				AdminID: []id.UserID{},
+			},
+		}
 		yamlData, err := yaml.Marshal(&data)
 		if err != nil {
 			log.Fatalf("Marshal default config.yaml failed: %v", err)
@@ -85,6 +112,16 @@ func setupEnv(workdir string) {
 			log.Fatalf("Auto creating dataPath failed: %v", err)
 		}
 		log.Println("Create data path sucessfully.")
+	}
+
+	cronPath := filepath.Join(workdir, "cron")
+	if ok, _ := isExist(cronPath); !ok {
+		log.Println("cronPath does not exist, auto creating at " + cronPath)
+		err := os.Mkdir(cronPath, 0777)
+		if err != nil {
+			log.Fatalf("Auto creating cronPath failed: %v", err)
+		}
+		log.Println("Create cron path sucessfully.")
 	}
 
 	quotaPath := filepath.Join(workdir, "data", "search_quota.json")
